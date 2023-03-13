@@ -34,10 +34,10 @@ _CITATION = """
 }
 """
 
-_VIDEO_ANNOTATIONS_URL = "TODO https://www-i6.informatik.rwth-aachen.de/ftp/pub/rwth-phoenix/2016/phoenix-2014-T.v3.tar.gz"
-_ANNOTATIONS_URL = "TODO https://nlp.biu.ac.il/~amit/datasets/public/phoenix-annotations.tar.gz"
+_VIDEO_ANNOTATIONS_URL = "TODO"
+_ANNOTATIONS_URL = "TODO"
 
-_POSE_URLS = {"holistic": "TODO https://nlp.biu.ac.il/~amit/datasets/poses/holistic/phoenix.tar.gz"}
+_POSE_URLS = {"holistic": "TODO"}
 _POSE_HEADERS = {"holistic": path.join(path.dirname(path.realpath(__file__)), "pose.header")}
 
 
