@@ -124,7 +124,7 @@ class JWSign(tfds.core.GeneratorBasedBuilder):
                 datum = {
                     "id": row["verseID"],
                     "signer": row["verse_signer"],
-                    "sl_id": row["verse_name"],
+                    "sl_id": row["verse_lang"],
                     "text": row["verse_text"],
                 }
 
