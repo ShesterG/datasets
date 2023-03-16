@@ -38,25 +38,85 @@ _VIDEO_ANNOTATIONS_URL = "TODO"
 _ANNOTATIONS_URL = "TODO"
 
 _POSE_URLS = {"holistic": "TODO"}
-_POSE_HEADERS = {"holistic": path.join(path.dirname(path.realpath(__file__)), "pose.header")}
+
+
+_POSE_HEADERS = {
+    "holistic": path.join(path.dirname(path.realpath(__file__)), "holistic.poseheader"),
+    "openpose": path.join(path.dirname(path.realpath(__file__)), "openpose.poseheader"),
+}
+#_POSE_HEADERS = {"holistic": path.join(path.dirname(path.realpath(__file__)), "pose.header")}
+
+_KNOWN_SPLITS = {
+    "3.0.0-jw-verse": path.join(path.dirname(path.realpath(__file__)), "splits", "split.3.0.0-jw-verse.json")
+}
+
+def load_split(split_name: str): # TODO "-> Dict[str, List[str]]" adapt this to jw dict format
+    """
+    Loads a split from the file system. What is loaded must be a JSON object with the following structure:
+    {"train": ..., "dev": ..., "test": ...}
+    :param split_name: An identifier for a predefined split or a filepath to a custom split file.
+    :return: The split loaded as a dictionary.
+    """
+    if split_name not in _KNOWN_SPLITS.keys():
+        # assume that the supplied string is a path on the file system
+        if not path.exists(split_name):
+            raise ValueError(
+                "Split '%s' is not a known data split identifier and does not exist as a file either.\n"
+                "Known split identifiers are: %s" % (split_name, str(_KNOWN_SPLITS))
+            )
+
+        split_path = split_name
+    else:
+        # the supplied string is an identifier for a predefined split
+        split_path = _KNOWN_SPLITS[split_name]
+
+    with open(split_path) as infile:
+        split = json.load(infile)  # type: Dict[str, List[str]]
+
+    return split
+
+DEFAULT_FPS = 29.970
+ 
+  
+class JWSignConfig(SignDatasetConfig):
+    def __init__(self, data_type: Literal["verse"] = "verse", split: str = None, **kwargs):
+        """
+        :param split: An identifier for a predefined split or a filepath to a custom split file.
+        :param data_type: Enforce to return verses as data.
+        """
+        super().__init__(**kwargs)
+
+        self.data_type = data_type
+        self.split = split
+
+        # Verify split matches data type
+        if self.split in _KNOWN_SPLITS and not self.split.endswith(self.data_type):
+            raise ValueError(f"Split '{self.split}' is not compatible with data type '{self.data_type}'.")  
 
 
 class JWSign(tfds.core.GeneratorBasedBuilder):
     """DatasetBuilder for jw_sign dataset."""
 
     VERSION = tfds.core.Version("3.0.0")
-    RELEASE_NOTES = {"3.0.0": "Initial release."}
+    RELEASE_NOTES = {"3.0.0": "3rd release."}
+
 
     BUILDER_CONFIGS = [
-        SignDatasetConfig(name="default", include_video=True, include_pose="holistic"),
-        SignDatasetConfig(name="videos", include_video=True, include_pose=None),
-        SignDatasetConfig(name="poses", include_video=False, include_pose="holistic"),
-        SignDatasetConfig(name="annotations", include_video=False, include_pose=None),
+        JWSignConfig(name="default", include_video=True, include_pose="holistic"),
+        JWSignConfig(name="videos", include_video=True, include_pose=None),
+        JWSignConfig(name="openpose", include_video=False, include_pose="openpose"),
+        JWSignConfig(name="holistic", include_video=False, include_pose="holistic"),
+        #JWSignConfig(name="poses", include_video=False, include_pose="holistic"),
+        JWSignConfig(name="annotations", include_video=False, include_pose=None),
+        JWSignConfig(name="verses", include_video=False, include_pose=None, data_type="verse"),
+
     ]
 
     def _info(self) -> tfds.core.DatasetInfo:
         """Returns the dataset metadata."""
-
+        assert isinstance(self._builder_config, JWSignConfig), \
+            "Builder config for jw_sign must be an instance of JWSignConfig"
+        
         features = {
             "id": tfds.features.Text(),
             "signer": tfds.features.Text(),
@@ -68,10 +128,16 @@ class JWSign(tfds.core.GeneratorBasedBuilder):
             features["fps"] = tf.int32
             features["video"] = self._builder_config.video_feature((1024, 960))
 
-        if self._builder_config.include_pose == "holistic":
-            pose_header_path = _POSE_HEADERS[self._builder_config.include_pose]
-            stride = 1 if self._builder_config.fps is None else 29.970 / self._builder_config.fps
-            features["pose"] = PoseFeature(shape=(None, 1, 543, 3), header_path=pose_header_path, stride=stride)
+        
+        if self._builder_config.include_pose is not None:
+          pose_header_path = _POSE_HEADERS[self._builder_config.include_pose]
+          stride = 1 if self._builder_config.fps is None else 29.970 / self._builder_config.fps
+
+          if self._builder_config.include_pose == "openpose":
+              features["pose"] = PoseFeature(shape=(None, 1, 137, 2), header_path=pose_header_path, stride=stride)
+          if self._builder_config.include_pose == "holistic":
+              features["pose"] = PoseFeature(shape=(None, 1, 543, 3), header_path=pose_header_path, stride=stride)
+       
 
         return tfds.core.DatasetInfo(
             builder=self,
@@ -82,12 +148,17 @@ class JWSign(tfds.core.GeneratorBasedBuilder):
             citation=_CITATION,
         )
 
-    def _split_generators(self, dl_manager: tfds.download.DownloadManager):
+    def _split_generators(self, dl_manager: tfds.download.DownloadManager): #TODO def _split_generators()
         """Returns SplitGenerators."""
         dataset_warning(self)
 
         urls = [_VIDEO_ANNOTATIONS_URL if self._builder_config.include_video else _ANNOTATIONS_URL]
 
+        
+        if self._builder_config.include_pose != "openpose":
+            for datum in index_data.values():
+                del datum["openpose"]        
+        
         if self._builder_config.include_pose is not None:
             urls.append(_POSE_URLS[self._builder_config.include_pose])
 
