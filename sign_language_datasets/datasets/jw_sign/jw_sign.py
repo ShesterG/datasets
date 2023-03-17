@@ -1,14 +1,32 @@
 """Jehovah Witness Sign Language: Parallel Corpus of Sign Language Video and Text Translation based on JW Bible Verses"""
+from __future__ import annotations
+
 import csv
+import cv2
+import gzip
+import json
+import math
+import numpy as np
 from os import path
+from copy import copy
+from typing import Dict, Any, Set, Optional, List
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow.io.gfile import GFile
 
+from pose_format.numpy import NumPyPoseBody
+from pose_format.utils.openpose import load_openpose, OpenPoseFrames
+from pose_format.pose import Pose
+
 from ..warning import dataset_warning
 from ...datasets.config import SignDatasetConfig
 from ...utils.features import PoseFeature
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import 
 
 _DESCRIPTION = """
 Parallel Corpus of JW Sign Language, including video and translation.
@@ -46,11 +64,16 @@ _POSE_HEADERS = {
 }
 #_POSE_HEADERS = {"holistic": path.join(path.dirname(path.realpath(__file__)), "pose.header")}
 
+# This `jws.json` file adapted from the file created using `create_index.py.`
+# TODO Make sure to follow up on the adaptation. it should contain "links" to mp4 videos and json text. 
+INDEX_URL = "TODO"
+
+
 _KNOWN_SPLITS = {
     "3.0.0-jw-verse": path.join(path.dirname(path.realpath(__file__)), "splits", "split.3.0.0-jw-verse.json")
 }
 
-def load_split(split_name: str): # TODO "-> Dict[str, List[str]]" adapt this to jw dict format
+def load_split(split_name: str): -> Dict[str, List[str]] 
     """
     Loads a split from the file system. What is loaded must be a JSON object with the following structure:
     {"train": ..., "dev": ..., "test": ...}
@@ -108,7 +131,7 @@ class JWSign(tfds.core.GeneratorBasedBuilder):
         JWSignConfig(name="holistic", include_video=False, include_pose="holistic"),
         #JWSignConfig(name="poses", include_video=False, include_pose="holistic"),
         JWSignConfig(name="annotations", include_video=False, include_pose=None),
-        JWSignConfig(name="verses", include_video=False, include_pose=None, data_type="verse"),
+        #JWSignConfig(name="verses", include_video=False, include_pose=None, data_type="verse"),
 
     ]
 
@@ -125,8 +148,9 @@ class JWSign(tfds.core.GeneratorBasedBuilder):
         }
 
         if self._builder_config.include_video:
-            features["fps"] = tf.int32
+            features["fps"] = tf.float32
             features["video"] = self._builder_config.video_feature((1024, 960))
+            features["video_path"] = tfds.features.Text()
 
         
         if self._builder_config.include_pose is not None:
@@ -148,67 +172,90 @@ class JWSign(tfds.core.GeneratorBasedBuilder):
             citation=_CITATION,
         )
 
-    def _split_generators(self, dl_manager: tfds.download.DownloadManager): #TODO def _split_generators()
+    def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         """Returns SplitGenerators."""
         dataset_warning(self)
 
-        urls = [_VIDEO_ANNOTATIONS_URL if self._builder_config.include_video else _ANNOTATIONS_URL]
-
+        index_path = dl_manager.download(INDEX_URL)
         
+        with open(index_path, "r", encoding="utf-8") as f:
+            index_data = json.load(f)
+        
+        # No need of this infos
+        #for datum in index_data.values():
+        #    del datum["duration"]
+        #    del datum["signer"]
+            
+
+        # Don't download videos if not necessary
+        if not self._builder_config.include_video:
+            for datum in index_data.values():
+                del datum["video"]
+
+        # Don't download openpose poses if not necessary
         if self._builder_config.include_pose != "openpose":
             for datum in index_data.values():
-                del datum["openpose"]        
+                del datum["openpose"]
+
+        # Don't download holistic poses if not necessary
+        if self._builder_config.include_pose != "holistic":
+            for datum in index_data.values():
+                del datum["holistic"]
+                
+                
+                
         
-        if self._builder_config.include_pose is not None:
-            urls.append(_POSE_URLS[self._builder_config.include_pose])
+        #urls = {url: url for datum in index_data.values() for url in datum.values() if url is not None}
 
-        downloads = dl_manager.download_and_extract(urls)
-        annotations_path = path.join(downloads[0], "JWSign-release-v1", "JWSign")
+        #local_paths = dl_manager.download(urls) #TOASK but why even are you downloading everything in the same folder.
 
-        if self._builder_config.include_pose == "holistic":
-            pose_path = path.join(downloads[1], "holistic")
+        #data = {_id: {k: local_paths[v] if v is not None else None for k, v in datum.items()} for _id, datum in index_data.items()}
+        data = index_data
+        
+        
+            
+        if self._builder_config.split is not None:
+            split = load_split(self._builder_config.split)
+
+            train_args = {"data": data, "split": split["train"]}
+            dev_args = {"data": data, "split": split["dev"]}
+            test_args = {"data": data, "split": split["test"]}
+
+            return [
+                tfds.core.SplitGenerator(name=tfds.Split.TRAIN, gen_kwargs=train_args),
+                tfds.core.SplitGenerator(name=tfds.Split.VALIDATION, gen_kwargs=dev_args),
+                tfds.core.SplitGenerator(name=tfds.Split.TEST, gen_kwargs=test_args),
+            ]
+
         else:
-            pose_path = None
+            return [tfds.core.SplitGenerator(name=tfds.Split.TRAIN, gen_kwargs={"data": data})]
+         
 
-        return [
-            tfds.core.SplitGenerator(
-                name=tfds.Split.VALIDATION, gen_kwargs={"annotations_path": annotations_path, "pose_path": pose_path, "split": "dev"},
-            ),
-            tfds.core.SplitGenerator(
-                name=tfds.Split.TEST, gen_kwargs={"annotations_path": annotations_path, "pose_path": pose_path, "split": "test"},
-            ),
-            tfds.core.SplitGenerator(
-                name=tfds.Split.TRAIN, gen_kwargs={"annotations_path": annotations_path, "pose_path": pose_path, "split": "train"},
-            ),
-        ]
-
-    def _generate_examples(self, annotations_path: str, pose_path: str, split: str):
+    def _generate_examples(self, , data, split: List[str] | Dict[str, List[str]] = None):
         """ Yields examples. """
+        
+        default_video = np.zeros((0, 0, 0, 3))  # Empty video
+        
+        for verse_id, datum in list(data.items()):
+            if split is not None and verse_id not in split:
+                continue
 
-        filepath = path.join(annotations_path, "annotations", "manual", "JWSign." + split + ".corpus.csv") #T0ASK 
-        images_path = path.join(annotations_path, "features", "fullFrame-1024x960px", split)
-        poses_path = path.join(pose_path, split) if pose_path is not None else None
+            features = {
+                "id": verse_id,
+                "text_path": str(datum["text"]),
+            }
+            
+            # if you want to work with videos   
+            if self._builder_config.include_video:
+                features["video_path"] = datum["video"]
+              
+            # if you want to work with poses  
+            if self._builder_config.include_pose is not None:
+                if self._builder_config.include_pose == "openpose":
+                    features["poses_path"] = str(datum["openpose"])
 
-        with GFile(filepath, "r") as f:
-            data = csv.DictReader(f, delimiter="|", quoting=csv.QUOTE_NONE)
-            for row in data:
-                datum = {
-                    "id": row["verseID"],
-                    "signer": row["verse_signer"],
-                    "sl_id": row["verse_lang"],
-                    "text": row["verse_text"],
-                }
-
-                if self._builder_config.include_video:
-                    frames_base = path.join(images_path, row["video"])[:-7] #TOASK why -7. 
-                    datum["video"] = [
-                        path.join(frames_base, name)
-                        for name in sorted(tf.io.gfile.listdir(frames_base))
-                        if name != "createDnnTrainingLabels-profile.py.lprof"
-                    ]
-                    datum["fps"] = self._builder_config.fps if self._builder_config.fps is not None else 29.970
-
-                if poses_path is not None:
-                    datum["pose"] = path.join(poses_path, datum["id"] + ".pose")
-
-                yield datum["id"], datum
+                if self._builder_config.include_pose == "holistic":
+                    features["poses_path"] = str(datum["holistic"])                
+        
+            features["id"] = verse_id
+            yield verse_id, features
